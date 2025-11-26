@@ -28,14 +28,14 @@ async fn main() {
     };
 
     let app = Router::new()
-        .route("/weather", get(weather_handler))
-        .route("/poem", get(poem_handler))
-        .route("/crypto-price", get(crypto_price_handler))
+        .route("/rust-weather", get(weather_handler))
+        .route("/rust-poem", get(poem_handler))
+        .route("/rust-crypto-price", get(crypto_price_handler))
         .with_state(state);
 
     println!(
         "\nRust X402 API running → \
-         http://localhost:3000/{{weather,poem,crypto-price}}\n"
+         http://localhost:3000/{{rust-weather,rust-poem,rust-crypto-price}}\n"
     );
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
