@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentRequirements {
@@ -25,8 +25,8 @@ impl PaymentRequirements {
             scheme: "exact",
             network: "cronos-testnet",
             pay_to: wallet,
-            asset: "0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0",  // USDC.e testnet
-            max_amount_required: "1000000",   // 1 USDC.e
+            asset: "0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0", // USDC.e testnet
+            max_amount_required: "1000000",                      // 1 USDC.e
             max_timeout_seconds: 300,
             description: "Premium Rust Weather API",
             mime_type: "application/json",

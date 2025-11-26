@@ -1,9 +1,9 @@
 mod payment_requirements;
 mod x402_middleware;
 
-use axum::{routing::get, Router, Json};
-use serde_json::json;
+use axum::{Json, Router, routing::get};
 use dotenv::dotenv;
+use serde_json::json;
 use std::env;
 
 use payment_requirements::PaymentRequirements;
@@ -17,8 +17,9 @@ async fn main() {
     let wallet = env::var("SELLER_WALLET").expect("SELLER_WALLET required");
     let requirements = PaymentRequirements::new(wallet);
 
-    let app = Router::new()
-        .route("/rust-weather", get(move |headers| {
+    let app = Router::new().route(
+        "/rust-weather",
+        get(move |headers| {
             let reqs = requirements.clone();
             async move {
                 // Payment guard
@@ -37,13 +38,12 @@ async fn main() {
                 }))
                 .into_response()
             }
-        }));
+        }),
+    );
 
     println!("\n Rust X402 API running → http://localhost:3000/rust-weather\n");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .expect("failed to bind TCP listener");
-    axum::serve(listener, app)
-        .await
-        .unwrap();
+    axum::serve(listener, app).await.unwrap();
 }
