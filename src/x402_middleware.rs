@@ -1,3 +1,5 @@
+use std::env;
+
 use axum::{
     Json,
     http::{HeaderMap, StatusCode},
@@ -8,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::payment_requirements::PaymentRequirements;
 
-const FACILITATOR: &str = "https://facilitator.cronoslabs.org/v2/x402";
+const DEFAULT_FACILITATOR: &str = "https://facilitator.cronoslabs.org/v2/x402";
 
 pub async fn x402_guard(
     headers: HeaderMap,
@@ -40,10 +42,13 @@ pub async fn x402_guard(
     });
 
     let client = Client::new();
+    let facilitator = facilitator_base_url();
+    let verify_url = format!("{}/verify", facilitator);
+    let settle_url = format!("{}/settle", facilitator);
 
     // 1. Verify
     let verify = client
-        .post(format!("{}/verify", FACILITATOR))
+        .post(verify_url)
         .json(&verify_body)
         .header("X402-Version", "1")
         .send()
@@ -71,7 +76,7 @@ pub async fn x402_guard(
 
     // 2. Settle
     let settle = client
-        .post(format!("{}/settle", FACILITATOR))
+        .post(settle_url)
         .json(&verify_body)
         .header("X402-Version", "1")
         .send()
@@ -150,4 +155,8 @@ fn facilitator_unavailable(context: &str, err: reqwest::Error) -> Response {
         })),
     )
         .into_response()
+}
+
+fn facilitator_base_url() -> String {
+    env::var("FACILITATOR_URL").unwrap_or_else(|_| DEFAULT_FACILITATOR.to_string())
 }

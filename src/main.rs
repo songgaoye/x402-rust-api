@@ -209,3 +209,129 @@ fn mock_price_feed() -> Vec<Value> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        extract::State,
+        http::{HeaderMap, HeaderValue, StatusCode},
+        response::{IntoResponse, Response},
+    };
+    use http_body_util::BodyExt;
+    use httpmock::prelude::*;
+    use serde_json::{Value, json};
+    use serial_test::serial;
+
+    #[tokio::test]
+    async fn weather_handler_requires_payment_header() {
+        let state = State(AppState {
+            requirements: PaymentRequirements::new(
+                "0x44cc4bfb01eb1e8b50acd822f8adc7b890ad7bdb".to_string(),
+            ),
+        });
+
+        let headers = HeaderMap::new();
+
+        let response = weather_handler(state, headers).await.into_response();
+        let (status, body) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(
+            body.get("error").and_then(Value::as_str),
+            Some("Payment Required")
+        );
+        assert_eq!(
+            body.get("paymentRequirements")
+                .and_then(|v| v.get("payTo"))
+                .and_then(Value::as_str),
+            Some("0x44cc4bfb01eb1e8b50acd822f8adc7b890ad7bdb")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn weather_handler_returns_weather_when_payment_valid() {
+        let mock_server = MockServer::start();
+        let _guard = EnvVarGuard::set(
+            "FACILITATOR_URL",
+            format!("{}/v2/x402", mock_server.base_url()),
+        );
+
+        let verify_mock = mock_server.mock(|when, then| {
+            when.method(POST).path("/v2/x402/verify");
+            then.status(200).json_body(json!({
+                "isValid": true
+            }));
+        });
+
+        let settle_mock = mock_server.mock(|when, then| {
+            when.method(POST).path("/v2/x402/settle");
+            then.status(200).json_body(json!({
+                "event": "payment.settled",
+                "txHash": "0xdeadbeef"
+            }));
+        });
+
+        let state = State(AppState {
+            requirements: PaymentRequirements::new("0x44cc4bfb01eb1e8b50acd822f8adc7b890ad7bdb".to_string()),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert("x-payment", HeaderValue::from_static("eyJ4NDAyVmVyc2lvbiI6MSwic2NoZW1lIjoiZXhhY3QiLCJuZXR3b3JrIjoiY3Jvbm9zLXRlc3RuZXQiLCJwYXlsb2FkIjp7ImZyb20iOiIweGYzOUZkNmU1MWFhZDg4RjZGNGNlNmFCODgyNzI3OWNmZkZiOTIyNjYiLCJ0byI6IjB4NzA5OTc5NzBDNTE4MTJkYzNBMDEwQzdkMDFiNTBlMGQxN2RjNzlDOCIsInZhbHVlIjoiMTAwMDAwMCIsInZhbGlkQWZ0ZXIiOjAsInZhbGlkQmVmb3JlIjoxNzM1Njg5NTUxLCJub25jZSI6IjB4MSIsInNpZ25hdHVyZSI6IjB4MTczNTY4OTU1MiIsImFzc2V0IjoiMHhVU0RYLi4uIn19"));
+
+        let response = weather_handler(state, headers).await.into_response();
+        let (status, body) = response_json(response).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body.get("txHash").and_then(Value::as_str),
+            Some("0xdeadbeef")
+        );
+        let weather = body
+            .get("weather")
+            .and_then(Value::as_object)
+            .expect("weather payload");
+        assert!(weather.contains_key("summary"));
+
+        verify_mock.assert();
+        settle_mock.assert();
+    }
+
+    async fn response_json(response: Response) -> (StatusCode, Value) {
+        let (parts, body) = response.into_parts();
+        let bytes = body.collect().await.expect("read body").to_bytes();
+        (
+            parts.status,
+            serde_json::from_slice(&bytes).expect("parse json"),
+        )
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: String) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(prev) = &self.previous {
+                unsafe {
+                    std::env::set_var(self.key, prev);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
+}
