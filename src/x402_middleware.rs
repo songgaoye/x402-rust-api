@@ -65,6 +65,43 @@ pub async fn x402_guard(
         }
     };
 
+    let verify_body = json!({
+        "x402Version": 1,
+        "paymentHeader": header_str,
+        "paymentRequirements": &requirements
+    });
+
+    let client = Client::new();
+    let facilitator = facilitator_base_url();
+    let verify_url = format!("{}/verify", facilitator);
+
+    let verify = client
+        .post(verify_url)
+        .json(&verify_body)
+        .header("X402-Version", "1")
+        .send()
+        .await
+        .map_err(|err| facilitator_unavailable("verify", err))?
+        .json::<Value>()
+        .await
+        .map_err(|err| facilitator_unavailable("verify (json)", err))?;
+
+    let is_valid = verify
+        .get("isValid")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !is_valid {
+        let reason = verify
+            .get("invalidReason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown reason");
+        return Err(payment_required_response(
+            &requirements,
+            "Invalid Payment",
+            Some(json!({ "reason": reason })),
+        ));
+    }
+
     let purchase =
         create_purchase(&header_str, requirements.description, requirements.clone()).await?;
 
@@ -96,40 +133,10 @@ async fn process_payment(
     });
 
     let client = Client::new();
-    let facilitator = facilitator_base_url();
-    let verify_url = format!("{}/verify", facilitator);
-    let settle_url = format!("{}/settle", facilitator);
-
-    // Verify payment header first
-    let verify = client
-        .post(&verify_url)
-        .json(&settle_body)
-        .header("X402-Version", "1")
-        .send()
-        .await
-        .map_err(|err| facilitator_unavailable("verify", err))?
-        .json::<Value>()
-        .await
-        .map_err(|err| facilitator_unavailable("verify (json)", err))?;
-
-    let is_valid = verify
-        .get("isValid")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !is_valid {
-        let reason = verify
-            .get("invalidReason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown reason");
-        return Err(payment_required_response(
-            requirements,
-            "Invalid Payment",
-            Some(json!({ "reason": reason })),
-        ));
-    }
+    let settle_url = format!("{}/settle", facilitator_base_url());
 
     let settlement = client
-        .post(&settle_url)
+        .post(settle_url)
         .json(&settle_body)
         .header("X402-Version", "1")
         .send()
@@ -138,26 +145,6 @@ async fn process_payment(
         .json::<Value>()
         .await
         .map_err(|err| facilitator_unavailable("settle (json)", err))?;
-
-    if settlement
-        .get("event")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        != "payment.settled"
-    {
-        let detail = settlement
-            .get("error")
-            .cloned()
-            .unwrap_or_else(|| json!(null));
-        return Err((
-            StatusCode::PAYMENT_REQUIRED,
-            Json(json!({
-                "error": "Settlement Failed",
-                "detail": detail
-            })),
-        )
-            .into_response());
-    }
 
     Ok(settlement)
 }
