@@ -12,6 +12,36 @@ use crate::payment_requirements::PaymentRequirements;
 
 const DEFAULT_FACILITATOR: &str = "https://facilitator.cronoslabs.org/v2/x402";
 
+pub async fn create_purchase(
+    payment_header: &str,
+    resource_id: &str,
+    requirements: PaymentRequirements,
+) -> Result<Value, Response> {
+    let settlement = process_payment(payment_header, &requirements).await?;
+
+    let tx_hash = match settlement.get("txHash").and_then(Value::as_str) {
+        Some(hash) => hash.to_string(),
+        None => {
+            return Err((
+                StatusCode::PAYMENT_REQUIRED,
+                Json(json!({
+                    "error": "Payment not settled",
+                    "settlement": settlement
+                })),
+            )
+                .into_response());
+        }
+    };
+
+    let resource = unlock_resource(resource_id);
+
+    Ok(json!({
+        "status": "ok",
+        "tx": tx_hash,
+        "resource": resource,
+    }))
+}
+
 pub async fn x402_guard(
     headers: HeaderMap,
     requirements: PaymentRequirements,
@@ -35,10 +65,34 @@ pub async fn x402_guard(
         }
     };
 
-    let verify_body = json!({
+    let purchase =
+        create_purchase(&header_str, requirements.description, requirements.clone()).await?;
+
+    let tx_hash = purchase
+        .get("tx")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": "Purchase response missing tx",
+                })),
+            )
+                .into_response()
+        })?
+        .to_string();
+
+    Ok(tx_hash)
+}
+
+async fn process_payment(
+    payment_header: &str,
+    requirements: &PaymentRequirements,
+) -> Result<Value, Response> {
+    let settle_body = json!({
         "x402Version": 1,
-        "paymentHeader": header_str,
-        "paymentRequirements": &requirements
+        "paymentHeader": payment_header,
+        "paymentRequirements": requirements
     });
 
     let client = Client::new();
@@ -46,10 +100,10 @@ pub async fn x402_guard(
     let verify_url = format!("{}/verify", facilitator);
     let settle_url = format!("{}/settle", facilitator);
 
-    // 1. Verify
+    // Verify payment header first
     let verify = client
-        .post(verify_url)
-        .json(&verify_body)
+        .post(&verify_url)
+        .json(&settle_body)
         .header("X402-Version", "1")
         .send()
         .await
@@ -68,16 +122,15 @@ pub async fn x402_guard(
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown reason");
         return Err(payment_required_response(
-            &requirements,
+            requirements,
             "Invalid Payment",
             Some(json!({ "reason": reason })),
         ));
     }
 
-    // 2. Settle
-    let settle = client
-        .post(settle_url)
-        .json(&verify_body)
+    let settlement = client
+        .post(&settle_url)
+        .json(&settle_body)
         .header("X402-Version", "1")
         .send()
         .await
@@ -86,13 +139,16 @@ pub async fn x402_guard(
         .await
         .map_err(|err| facilitator_unavailable("settle (json)", err))?;
 
-    if settle
+    if settlement
         .get("event")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         != "payment.settled"
     {
-        let detail = settle.get("error").cloned().unwrap_or_else(|| json!(null));
+        let detail = settlement
+            .get("error")
+            .cloned()
+            .unwrap_or_else(|| json!(null));
         return Err((
             StatusCode::PAYMENT_REQUIRED,
             Json(json!({
@@ -103,21 +159,11 @@ pub async fn x402_guard(
             .into_response());
     }
 
-    let tx_hash = settle
-        .get("txHash")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "error": "Settlement response missing txHash",
-                })),
-            )
-                .into_response()
-        })?
-        .to_string();
+    Ok(settlement)
+}
 
-    Ok(tx_hash)
+fn unlock_resource(resource_id: &str) -> String {
+    format!("Access granted -> {}", resource_id)
 }
 
 fn payment_required_response(
